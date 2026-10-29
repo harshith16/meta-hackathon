@@ -20,7 +20,8 @@ import httpx
 
 from . import config
 
-_DEFAULT_VISIBLE_TO = ["employee", "manager"]
+# General fact: visible to every hierarchy role (employee, CFO, CTO, CEO).
+_DEFAULT_VISIBLE_TO = ["employee", "cfo", "cto", "ceo"]
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -124,8 +125,10 @@ _EXTRACT_SYSTEM = (
     'the new state AND what it replaces (e.g. "Travel limit changed '
     'from 8000 to 12000 rupees"), never just the new state alone.\n'
     "- For each fact, emit visible_to: the roles allowed to see it. "
-    'Default to ["employee", "manager"]. Restrict it only when the '
-    "input explicitly scopes the fact to specific roles.\n"
+    'Default to ["employee", "cfo", "cto", "ceo"] (a general fact). '
+    "Restrict it only when the input explicitly scopes the fact: "
+    'finance facts to ["cfo", "ceo"], technical facts to '
+    '["cto", "ceo"].\n'
     '- For each fact, emit effective_date as "YYYY-MM-DD" or null, '
     "only when the input states an effective date.\n"
     "- For each fact, emit triples: a list of objects with keys "
@@ -337,7 +340,8 @@ def extract_and_store(
                 conn,
                 company_id,
                 fact=fact_text,
-                visible_to=fact.get("visible_to") or ["employee", "manager"],
+                visible_to=fact.get("visible_to")
+                or ["employee", "cfo", "cto", "ceo"],
                 effective_date=fact.get("effective_date"),
                 source=source,
                 source_message_id=source_message_id,

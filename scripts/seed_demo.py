@@ -6,6 +6,9 @@ on content, so re-running after a rename adds the renamed facts (old
 placeholder rows can be cleared by company id).
 
 All data is fictional sample-company data. Never real company data.
+Facts are tagged with a domain (general / finance / technical)
+that drives hierarchy visibility; one org fact stays CEO-only via
+an explicit visible_to override.
 Run: PYTHONPATH=. python scripts/seed_demo.py
 """
 
@@ -58,7 +61,7 @@ def main():
             conn,
             COMPANY_ID,
             "Travel limit is 8000 rupees per trip.",
-            ["employee", "manager"],
+            domain="general",
             effective_date=date(2026, 1, 1),
             source="document",
             document_id=None,
@@ -74,7 +77,7 @@ def main():
             conn,
             COMPANY_ID,
             "Employees receive 20 days of paid annual leave per year.",
-            ["employee", "manager"],
+            domain="general",
             effective_date=date(2026, 1, 1),
             source="document",
             triples=[
@@ -89,7 +92,7 @@ def main():
             conn,
             COMPANY_ID,
             "Reimbursement claims must be filed within 30 days of return.",
-            ["employee", "manager"],
+            domain="general",
             effective_date=date(2026, 1, 1),
             source="document",
             triples=[
@@ -104,7 +107,7 @@ def main():
             conn,
             COMPANY_ID,
             "Refunds are issued up to 5000 rupees within 14 days of purchase.",
-            ["employee", "manager"],
+            domain="general",
             effective_date=date(2026, 1, 1),
             source="document",
             triples=[
@@ -119,7 +122,7 @@ def main():
             conn,
             COMPANY_ID,
             f"{MANAGER_NAME} approves travel bookings above the limit.",
-            ["employee", "manager"],
+            domain="general",
             effective_date=date(2026, 1, 1),
             source="document",
             triples=[
@@ -134,7 +137,7 @@ def main():
             conn,
             COMPANY_ID,
             f"{MANAGER_NAME} is the manager for field worker {WORKER_NAME}.",
-            ["manager"],
+            visible_to=["ceo"],
             effective_date=date(2026, 1, 1),
             source="document",
             triples=[
@@ -142,6 +145,38 @@ def main():
                     "source": "org_chart",
                     "relationship": "manages",
                     "destination": WORKER_NAME.lower(),
+                }
+            ],
+        )
+        write_fact(
+            conn,
+            COMPANY_ID,
+            "Department budgets above 100000 rupees need CFO sign-off "
+            "before spending.",
+            domain="finance",
+            effective_date=date(2026, 1, 1),
+            source="document",
+            triples=[
+                {
+                    "source": "finance_policy",
+                    "relationship": "budget_approval",
+                    "destination": "cfo",
+                }
+            ],
+        )
+        write_fact(
+            conn,
+            COMPANY_ID,
+            "Production database credentials rotate every 30 days and "
+            "are owned by the platform team.",
+            domain="technical",
+            effective_date=date(2026, 1, 1),
+            source="document",
+            triples=[
+                {
+                    "source": "platform_policy",
+                    "relationship": "credential_rotation_days",
+                    "destination": "30",
                 }
             ],
         )

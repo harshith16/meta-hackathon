@@ -38,4 +38,11 @@ WHATSAPP_PHONE_ID = _env("WHATSAPP_PHONE_ID", "")
 WHATSAPP_VERIFY_TOKEN = _env("WHATSAPP_VERIFY_TOKEN", "")
 WHATSAPP_APP_SECRET = _env("WHATSAPP_APP_SECRET", "")
 
+# Hierarchy role mapping (comma-separated phone lists allowed).
+# WHATSAPP_MANAGER_PHONE is kept as a CEO alias (backward compat).
+WHATSAPP_CEO_PHONE = _env("WHATSAPP_CEO_PHONE", "")
+WHATSAPP_CFO_PHONE = _env("WHATSAPP_CFO_PHONE", "")
+WHATSAPP_CTO_PHONE = _env("WHATSAPP_CTO_PHONE", "")
+WHATSAPP_MANAGER_PHONE = _env("WHATSAPP_MANAGER_PHONE", "")
+
 COMPANY_ID = _env("COMPANY_ID", "sample-company")

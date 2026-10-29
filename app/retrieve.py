@@ -85,12 +85,34 @@ ENTITY_SIM_MIN = 0.5  # entity matches below this similarity do not count
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-def _base_filter(include_superseded: bool) -> str:
-    """Shared candidate filter. Company + role are always bound params."""
+# Hierarchy role predicates (founder spec, 29 Oct 2026): anyone may ask
+# anything; answers are gated by role. CEO sees everything; CFO sees
+# finance + general; CTO sees technical + general; employee sees
+# general only. General facts carry 'employee' in visible_to, so the
+# CFO/CTO predicates also match the general token. 'manager' is the
+# legacy role string, kept working. Unknown roles get the employee
+# predicate (least privilege). Predicates use whitelisted literals
+# only — the role string is never interpolated from input.
+_ROLE_PREDICATES = {
+    "ceo": "TRUE",
+    "cfo": "(visible_to @> ARRAY['cfo'] OR visible_to @> ARRAY['employee'])",
+    "cto": "(visible_to @> ARRAY['cto'] OR visible_to @> ARRAY['employee'])",
+    "employee": "visible_to @> ARRAY['employee']",
+    "manager": "(visible_to @> ARRAY['manager'] OR visible_to @> ARRAY['employee'])",
+}
+
+
+def _role_predicate(role: str) -> str:
+    return _ROLE_PREDICATES.get(role, _ROLE_PREDICATES["employee"])
+
+
+def _base_filter(include_superseded: bool, role: str) -> str:
+    """Shared candidate filter. Company is a bound param; the role
+    predicate is a whitelisted literal (see _ROLE_PREDICATES)."""
     latest = "" if include_superseded else "AND is_latest = true"
     return (
         "company_id = %s "
-        "AND visible_to @> ARRAY[%s] "
+        f"AND {_role_predicate(role)} "
         "AND is_forgotten = false "
         f"{latest} "
         "AND (forget_after IS NULL OR forget_after > now())"
@@ -150,7 +172,7 @@ def search(conn, company_id, role, query, include_superseded=False, limit=10):
     SEMANTIC_THRESHOLD is gated first: it contributes nothing, and a
     candidate with no keyword/entity signal at all is dropped.
     """
-    filt = _base_filter(include_superseded)
+    filt = _base_filter(include_superseded, role)
     # id (str) -> {"semantic": float, "keyword": float, "entity": bool}
     cand = {}
 
@@ -164,7 +186,7 @@ def search(conn, company_id, role, query, include_superseded=False, limit=10):
             f"WHERE {filt} "
             "AND to_tsvector('simple', COALESCE(text_lemmatized, '')) "
             "@@ plainto_tsquery('simple', %s)",
-            (query, company_id, role, query),
+            (query, company_id, query),
         )
         for mid, rank in cur.fetchall():
             cand.setdefault(str(mid), {"semantic": 0.0, "keyword": 0.0, "entity": 0.0})
@@ -189,7 +211,7 @@ def search(conn, company_id, role, query, include_superseded=False, limit=10):
                 f"WHERE {filt} AND embedding IS NOT NULL "
                 "ORDER BY embedding <=> %s::vector "
                 "LIMIT %s",
-                (vec_literal, company_id, role, vec_literal, SEMANTIC_LIMIT),
+                (vec_literal, company_id, vec_literal, SEMANTIC_LIMIT),
             )
             for mid, dist in cur.fetchall():
                 entry = cand.setdefault(
@@ -252,7 +274,7 @@ def search(conn, company_id, role, query, include_superseded=False, limit=10):
             "SELECT id, fact, version, is_latest, status, effective_date, "
             "visible_to, source, source_message_id FROM memories "
             f"WHERE id = ANY(%s::uuid[]) AND {filt}",
-            (list(cand.keys()), company_id, role),
+            (list(cand.keys()), company_id),
         )
         rows = cur.fetchall()
         cols = [d.name for d in cur.description]
@@ -390,7 +412,7 @@ def search_as_of(conn, company_id, role, query, as_of, limit=10):
         as_of = date.fromisoformat(as_of)
     filt = (
         "company_id = %s "
-        "AND visible_to @> ARRAY[%s] "
+        f"AND {_role_predicate(role)} "
         "AND is_forgotten = false "
         "AND (forget_after IS NULL OR forget_after > %s::date)"
     )
@@ -404,7 +426,7 @@ def search_as_of(conn, company_id, role, query, as_of, limit=10):
             f"WHERE {filt} "
             "AND to_tsvector('simple', COALESCE(text_lemmatized, '')) "
             "@@ plainto_tsquery('simple', %s)",
-            (query, company_id, role, as_of, query),
+            (query, company_id, as_of, query),
         )
         for mid, rank in cur.fetchall():
             cand.setdefault(str(mid), {"semantic": 0.0, "keyword": 0.0, "entity": 0.0})
@@ -424,7 +446,7 @@ def search_as_of(conn, company_id, role, query, as_of, limit=10):
                 f"WHERE {filt} AND embedding IS NOT NULL "
                 "ORDER BY embedding <=> %s::vector "
                 "LIMIT %s",
-                (vec_literal, company_id, role, as_of, vec_literal, SEMANTIC_LIMIT),
+                (vec_literal, company_id, as_of, vec_literal, SEMANTIC_LIMIT),
             )
             for mid, dist in cur.fetchall():
                 entry = cand.setdefault(
@@ -475,7 +497,7 @@ def search_as_of(conn, company_id, role, query, as_of, limit=10):
             "visible_to, source, source_message_id, root_memory_id, "
             "created_at FROM memories "
             f"WHERE id = ANY(%s::uuid[]) AND {filt}",
-            (list(cand.keys()), company_id, role, as_of),
+            (list(cand.keys()), company_id, as_of),
         )
         rows = cur.fetchall()
         cols = [d.name for d in cur.description]

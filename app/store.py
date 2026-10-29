@@ -17,6 +17,16 @@ from app.embed import embed_document
 
 MAX_CHUNK_CHARS = 6000
 
+# Domain -> visible_to mapping (hierarchy roles, founder spec 29 Oct
+# 2026). A fact's domain tag decides who sees it; the tag itself is
+# carried by the visible_to array, so no schema change is needed.
+# general: everyone; finance: CFO + CEO; technical: CTO + CEO.
+DOMAIN_VISIBLE_TO = {
+    "general": ["employee", "cfo", "cto", "ceo"],
+    "finance": ["cfo", "ceo"],
+    "technical": ["cto", "ceo"],
+}
+
 _TRAILING_STRIP = string.punctuation + " \t\n\r"
 
 
@@ -163,7 +173,8 @@ def write_fact(
     conn,
     company_id,
     fact,
-    visible_to,
+    visible_to=None,
+    domain=None,
     effective_date=None,
     source="manual",
     source_message_id=None,
@@ -174,6 +185,9 @@ def write_fact(
 ) -> str:
     """Insert a new fact row, or return the existing id on exact dedup.
 
+    When visible_to is None, domain ("general"/"finance"/"technical",
+    default "general") decides it via DOMAIN_VISIBLE_TO. An explicit
+    visible_to always wins.
     Version is always computed here, never accepted from the caller.
     Supersede (if given) happens in the same transaction as the insert:
     the old row becomes is_latest=false / status='superseded' and the
@@ -183,7 +197,13 @@ def write_fact(
     nothing.
     """
     if visible_to is None:
-        visible_to = []
+        # Domain tag drives visibility; an explicit visible_to always
+        # wins (used for CEO-only org facts and legacy callers).
+        visible_to = list(
+            DOMAIN_VISIBLE_TO.get(
+                domain or "general", DOMAIN_VISIBLE_TO["general"]
+            )
+        )
     else:
         visible_to = list(visible_to)
     digest = fact_hash(fact, visible_to, effective_date)

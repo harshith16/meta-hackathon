@@ -1,8 +1,8 @@
 # Company Brain — Meta Hackathon
 
 Answers cite sources, remember superseded policies, and warn on
-conflicts. WhatsApp first, Instagram DM second. Local-first: no
-hosting, no hosted DB, no hosted embeddings.
+conflicts. WhatsApp only. Local-first: no hosting, no hosted DB,
+no hosted embeddings.
 
 ## What it is
 
@@ -54,23 +54,40 @@ scripts/acceptance.py` — exits 0 only if every check passes.
    `https://<your-tunnel>/webhook/whatsapp` and the verify token to
    your `WHATSAPP_VERIFY_TOKEN`.
 2. Set `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_ID` in `.env`.
-3. Role rule: sender == `WHATSAPP_MANAGER_PHONE` gets the manager
-   role, everyone else gets employee.
+3. Role rule (hierarchy): anyone may ask anything; answers are
+   gated by the sender's role. `WHATSAPP_CEO_PHONE` (CEO / board /
+   main executive) sees everything; `WHATSAPP_CFO_PHONE` sees
+   finance + general; `WHATSAPP_CTO_PHONE` sees technical +
+   general; everyone else is an employee and sees general only.
+   Phone lists are comma-separated. `WHATSAPP_MANAGER_PHONE`
+   still works as a CEO alias. Facts carry a domain tag
+   (general / finance / technical) that drives visibility via
+   `visible_to`; no schema change was needed for the hierarchy.
+
+Document and image messages work on the same webhook: documents
+are downloaded via the Graph API, saved under `MEDIA_DIR`, and
+their text is extracted (PDF, DOCX, TXT) and fed to fact
+extraction, so a forwarded document becomes answerable. The
+sender gets a confirmation stating what was read — or plainly
+that no text could be extracted. Images are stored with their
+caption only (embeddinggemma is text-only); pixels are never
+claimed as embedded.
 
 Note: free-form replies work only within 24h of the user's last
 message; outside that window WhatsApp requires a pre-approved
 template — the webhook returns `template_required` instead of
-faking delivery. The same shape applies to Instagram DMs
-(`/webhook/instagram`, business account + linked Page required).
+faking delivery.
 
 ## Uploads
 
 `POST /upload` (multipart `file` + optional `caption`) stores the
 file under `MEDIA_DIR` (default `./media`) and records it in the
-`media` table. Images are embedded via caption/text only
-(embeddinggemma v1 is text-only); `embedded=false` whenever no
-text was available. Link media to facts with
-`store.link_media_to_fact`.
+`media` table. PDF/DOCX/TXT uploads also get their text extracted,
+ingested as searchable documents, and fed to fact extraction (the
+receipt reports `text_extracted` and `facts_stored`). Images are
+embedded via caption/text only (embeddinggemma v1 is text-only);
+`embedded=false` whenever no text was available. Link media to
+facts with `store.link_media_to_fact`.
 
 ## Layout (one responsibility per file)
 
@@ -81,7 +98,8 @@ text was available. Link media to facts with
   conflict)
 - `app/llm.py` — Meta API client, extraction, synthesis, fallback
 - `app/embed.py` — local EmbeddingGemma via Ollama (optional path)
-- `app/whatsapp.py`, `app/instagram.py` — chat surfaces
+- `app/whatsapp.py` — chat surface (WhatsApp only)
+- `app/extract_text.py` — PDF/DOCX/TXT text extraction
 - `app/timeline.py` — version-timeline page
 - `app/upload.py` — file uploads
 - `app/main.py` — app wiring, logging, health
