@@ -6,6 +6,16 @@ This module only reads names; it never prints values.
 
 import os
 
+try:
+    from dotenv import load_dotenv
+
+    # Loads .env from the working directory if present. Real environment
+    # variables always win (override=False); this only fills gaps so a
+    # plain `.env` file just works on a dev machine.
+    load_dotenv()
+except ImportError:
+    pass
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
