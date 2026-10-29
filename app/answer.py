@@ -1,0 +1,136 @@
+"""Answering: retrieval + LLM synthesis with an honest template fallback.
+
+Imports app.retrieve and app.llm. app.llm is built in parallel; while it
+is absent, synthesis is skipped and the template fallback is used (never
+a fabricated answer). Similarity scores are INTERNAL ONLY and are never
+put into any output string here.
+"""
+
+from app import retrieve
+
+try:  # app.llm built in parallel; absence -> template fallback, not a crash.
+    from app import llm
+except ImportError:  # pragma: no cover - parallel-build tolerance
+    llm = None
+
+EMPTY_ANSWER = "I couldn't find a matching policy for that question."
+
+
+def _build_citations(current):
+    """One citation per fact: document ids first, else the chat message id."""
+    citations = []
+    for fact in current:
+        doc_ids = fact.get("document_ids") or []
+        if doc_ids:
+            for doc_id in doc_ids:
+                citations.append(
+                    {
+                        "memory_id": fact["id"],
+                        "source": fact["source"],
+                        "source_ref": str(doc_id),
+                    }
+                )
+        elif fact.get("source_message_id"):
+            citations.append(
+                {
+                    "memory_id": fact["id"],
+                    "source": fact["source"],
+                    "source_ref": fact["source_message_id"],
+                }
+            )
+        else:
+            citations.append(
+                {
+                    "memory_id": fact["id"],
+                    "source": fact["source"],
+                    "source_ref": fact["source"],
+                }
+            )
+    return citations
+
+
+def _build_freshness(current):
+    if not current:
+        return None
+    top = current[0]
+    if top.get("effective_date"):
+        base = f"Current as of {top['effective_date']}"
+    else:
+        base = "Current policy (no effective date on file)"
+    dates = sorted({f["effective_date"] for f in current if f.get("effective_date")})
+    if len(dates) > 1:
+        base += f" (policies on file span {dates[0]} to {dates[-1]})"
+    return base
+
+
+def _build_conflict(conflict_rows):
+    if not conflict_rows:
+        return None
+    parts = [
+        f"Previously {row['fact']}; superseded — see history" for row in conflict_rows
+    ]
+    return " ".join(parts)
+
+
+def _template_fallback(current):
+    """Honest fallback: restate the top current fact, nothing invented."""
+    return current[0]["fact"]
+
+
+def answer_question(conn, company_id, role, question):
+    current = retrieve.search(conn, company_id, role, question)
+    all_rows = retrieve.search(
+        conn, company_id, role, question, include_superseded=True
+    )
+    current_ids = {f["id"] for f in current}
+    conflict_rows = [
+        r
+        for r in all_rows
+        if r["status"] == "superseded" and r["id"] not in current_ids
+    ]
+
+    if not current:
+        return {
+            "answer": EMPTY_ANSWER,
+            "facts": [],
+            "citations": [],
+            "freshness": None,
+            "conflict": None,
+            "empty": True,
+        }
+
+    answer = None
+    if llm is not None:
+        try:
+            answer = llm.synthesize(question, current, conflict_rows)
+        except Exception:
+            answer = None
+    if not answer or not str(answer).strip():
+        answer = _template_fallback(current)
+
+    return {
+        "answer": answer,
+        "facts": current,
+        "citations": _build_citations(current),
+        "freshness": _build_freshness(current),
+        "conflict": _build_conflict(conflict_rows),
+        "empty": False,
+    }
+
+
+def format_chat_message(result):
+    """Plain chat text: answer, evidence lines, freshness, conflict.
+
+    No markdown tables, no scores, no jargon.
+    """
+    lines = [result["answer"]]
+    citations = result.get("citations") or []
+    if citations:
+        lines.append("Evidence:")
+        for c in citations:
+            lines.append(f"- {c['source']}: {c['source_ref']}")
+    if result.get("freshness"):
+        lines.append(result["freshness"])
+    if result.get("conflict"):
+        lines.append(result["conflict"])
+    return "\n".join(lines)
