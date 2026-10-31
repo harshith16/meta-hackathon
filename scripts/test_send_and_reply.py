@@ -15,13 +15,13 @@ print(f"Sent 'hi' success: {res1.get('success')}, message_id: {res1.get('message
 if not res1.get("success"):
     print(f"Error details: {res1.get('error')}")
 
-# 2. Get conversational response from Groq LLM
-groq_reply = reply_conversation("hi")
+# 2. Get conversational response from Meta Model API
+llm_reply = reply_conversation("hi")
 sys.stdout.reconfigure(encoding="utf-8")
-print(f"Groq LLM generated reply: {groq_reply}")
+print(f"Meta Model API generated reply: {llm_reply}")
 
-# 3. Send Groq reply to WhatsApp recipient
-res2 = whatsapp_service.send_text_message(recipient, groq_reply)
-print(f"Sent Groq reply success: {res2.get('success')}, message_id: {res2.get('message_id')}")
+# 3. Send Meta Model API reply to WhatsApp recipient
+res2 = whatsapp_service.send_text_message(recipient, llm_reply)
+print(f"Sent reply success: {res2.get('success')}, message_id: {res2.get('message_id')}")
 if not res2.get("success"):
     print(f"Error details: {res2.get('error')}")

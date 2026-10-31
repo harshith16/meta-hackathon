@@ -64,73 +64,68 @@ def _role_for(sender: str) -> str:
     return "employee"
 
 
-def _is_greeting_or_chitchat(text: str) -> bool:
-    t = (text or "").strip().lower()
-    t_clean = re.sub(r"[^\w\s]", "", t).strip()
-    if not t_clean:
-        return True
-    chitchat_exact = {
-        "hi", "hello", "hey", "hola", "greetings", "good morning",
-        "good afternoon", "good evening", "how are you", "who are you",
-        "what can you do", "what do you do", "help", "start", "menu",
-        "thanks", "thank you", "bye", "goodbye", "tell me about yourself",
-        "hello who are you", "hi who are you", "hey who are you",
-        "hi how are you", "hello how are you", "what is this", "who made you",
-    }
-    if t_clean in chitchat_exact:
-        return True
-    parts = t_clean.split()
-    if parts and parts[0] in {"hi", "hello", "hey", "hola", "greetings"}:
-        if len(parts) <= 6:
-            return True
-        remaining = " ".join(parts[1:])
-        if any(phrase in remaining for phrase in ("how are you", "who are you", "what can you do", "what do you do", "help")):
-            return True
-    if any(phrase in t_clean for phrase in ("who are you", "what can you do", "how are you", "tell me about yourself")):
-        return True
-    return False
+def _run_answer(company_id: str, role: str, question: str) -> str:
+    """Retrieve relevant context and get the raw response directly from Meta Model API.
 
-
-def _run_answer(company_id: str, role: str, question: str):
-    """Call answer_question with a DB connection, tolerating the db.py
-    connection helper's shape (context manager or plain callable).
-
-    Imported lazily so this router imports even before app.db/app.answer
-    land; at runtime those modules must exist.
+    No hardcoded greetings, no canned fallback messages, no preset answers.
+    Every answer is purely Meta Model API's raw response.
     """
-    from app.answer import answer_question, format_chat_message
-    from app.llm import reply_conversation
+    from app.llm import generate_answer
+    from app import retrieve
 
-    if _is_greeting_or_chitchat(question):
-        try:
-            return reply_conversation(question)
-        except Exception:
-            pass
-
+    context_facts = []
     conn = None
     ctx = None
     try:
         from app.db import get_conn
 
         candidate = get_conn()
-        # get_conn() may be a context manager or a plain connection.
         if hasattr(candidate, "__enter__"):
             ctx = candidate
             conn = ctx.__enter__()
         else:
             conn = candidate
-    except ImportError:
-        # No db helper: answer_question still needs a conn; let the
-        # ImportError surface honestly rather than inventing an answer.
-        raise
-    try:
-        result = answer_question(conn, company_id, role, question)
-        if result.get("empty"):
+
+        rows = retrieve.search(conn, company_id, role, question, limit=5)
+        doc_ids_all = set()
+        for r in rows:
+            for d in (r.get("document_ids") or []):
+                doc_ids_all.add(str(d))
+        doc_titles = {}
+        if doc_ids_all and hasattr(conn, "cursor"):
             try:
-                return reply_conversation(question)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, title FROM documents WHERE id = ANY(%s::uuid[])",
+                        (list(doc_ids_all),),
+                    )
+                    for did, dtitle in cur.fetchall():
+                        if dtitle:
+                            doc_titles[str(did)] = dtitle
             except Exception:
-                return format_chat_message(result)
-        return format_chat_message(result)
+                pass
+
+        for r in rows:
+            scores = r.get("scores") or {}
+            sem = scores.get("semantic", 0.0)
+            kw = scores.get("keyword", 0.0)
+            ent = scores.get("entity", 0.0)
+            if sem >= 0.22 or kw > 0.05 or ent > 0:
+                dt = None
+                for did in (r.get("document_ids") or []):
+                    if str(did) in doc_titles:
+                        dt = doc_titles[str(did)]
+                        break
+                context_facts.append(
+                    {
+                        "fact": r["fact"],
+                        "effective_date": r.get("effective_date"),
+                        "source": r.get("source"),
+                        "doc_title": dt,
+                    }
+                )
+    except Exception:
+        context_facts = []
     finally:
         if ctx is not None:
             ctx.__exit__(None, None, None)
@@ -139,6 +134,8 @@ def _run_answer(company_id: str, role: str, question: str):
                 conn.close()
             except Exception:
                 pass
+
+    return generate_answer(question, context_facts=context_facts)
 
 
 def _safe_filename(name: str) -> str:
@@ -306,9 +303,12 @@ async def _process_media(company_id: str, msg: dict, token: str) -> str:
     with open(storage_path, "wb") as fh:
         fh.write(data)
     caption = msg.get("caption")
-    text = None
-    if msg["kind"] == "document":
-        text = extract_text(msg["filename"], data)
+    text = extract_text(msg["filename"], data)
+    if caption:
+        if text:
+            text = f"Caption: {caption}\n\nContent:\n{text}"
+        else:
+            text = f"Caption: {caption}"
     with get_conn() as conn:
         ingest_media(
             conn,
@@ -332,32 +332,18 @@ async def _process_media(company_id: str, msg: dict, token: str) -> str:
                 from app.llm import extract_and_store
 
                 fact_ids = extract_and_store(
-                    conn, company_id, text, "document", document_id=doc_id
+                    conn,
+                    company_id,
+                    text,
+                    "image" if msg["kind"] == "image" else "document",
+                    document_id=doc_id,
                 )
             except Exception:
                 fact_ids = []
+    from app.llm import generate_doc_reply
+
     filename = msg["filename"]
-    if msg["kind"] == "document":
-        if text and fact_ids:
-            return (
-                f"I read {filename} and added {len(fact_ids)} fact(s) "
-                "to the company brain. Ask me anything about it."
-            )
-        if text:
-            return (
-                f"I read {filename} and saved it to the company "
-                "brain. Ask me anything about it."
-            )
-        return (
-            f"I saved {filename}, but I couldn't extract text "
-            "from it, so I can't answer questions about its contents yet."
-        )
-    if caption:
-        return f"I saved {filename} with your caption in the company brain."
-    return (
-        f"I saved {filename}, but without a caption I can't "
-        "answer questions about it yet."
-    )
+    return generate_doc_reply(filename, text, len(fact_ids))
 
 
 async def _deliver(client, phone_id: str, token: str, sender: str, body: str):
@@ -415,10 +401,17 @@ async def receive_whatsapp(request: Request):
         payload = await request.json()
     except Exception:
         return JSONResponse({"status": "ignored"}, status_code=200)
+
+    import json
+    import logging
+    _log = logging.getLogger("whatsapp_webhook")
+    _log.info("Received WhatsApp Webhook payload: %s", json.dumps(payload)[:500])
+
     messages = parse_incoming(payload)
     if not messages:
         return {"status": "ok", "replies": []}
 
+    _log.info("Parsed %d incoming message(s): %s", len(messages), messages)
     token = config.WHATSAPP_TOKEN
     phone_id = config.WHATSAPP_PHONE_ID
     company_id = _company_id()
@@ -431,7 +424,14 @@ async def receive_whatsapp(request: Request):
     for msg in messages:
         sender = msg["sender"]
         if msg["kind"] == "text":
-            reply = _run_answer(company_id, _role_for(sender), msg["text"])
+            try:
+                reply = _run_answer(company_id, _role_for(sender), msg["text"])
+            except Exception as exc:
+                _log.exception("Error running answer for message: %s", exc)
+                reply = ""
+            if not reply:
+                from app.llm import generate_answer
+                reply = generate_answer(msg["text"])
         else:
             if not token or not phone_id:
                 replies_drafted.append(
@@ -448,13 +448,16 @@ async def receive_whatsapp(request: Request):
             try:
                 reply = await _process_media(company_id, msg, token)
             except Exception as exc:
+                _log.exception("Media processing failed: %s", exc)
                 graph_errors.append(
                     {"to": sender, "error": f"media processing failed: {exc}"}
                 )
                 continue
+
         if not token or not phone_id:
             replies_drafted.append({"to": sender, "body": reply})
             continue
+
         recipient_to_use = sender
         test_recip = config.WHATSAPP_TEST_RECIPIENT
         if test_recip and (
@@ -464,10 +467,14 @@ async def receive_whatsapp(request: Request):
         ):
             recipient_to_use = test_recip
 
+        _log.info("Delivering reply to %s: %s", recipient_to_use, reply[:100])
         async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             kind, detail = await _deliver(client, phone_id, token, recipient_to_use, reply)
             if kind == "error" and test_recip and recipient_to_use != test_recip:
+                _log.warning("Primary delivery failed, retrying to test recipient %s", test_recip)
                 kind, detail = await _deliver(client, phone_id, token, test_recip, reply)
+
+        _log.info("Delivery result for %s: kind=%s, detail=%s", recipient_to_use, kind, detail)
         if kind == "sent":
             sent_ids.append(detail)
         elif kind == "template_required":

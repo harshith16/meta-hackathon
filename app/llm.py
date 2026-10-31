@@ -342,18 +342,36 @@ def extract_and_store(
     return ids
 
 
-def reply_conversation(message: str) -> str:
-    """Generate a conversational reply using Groq when no specific document/policy matches."""
-    if not has_key():
-        return "Hello! I am your Company Brain assistant. You can upload documents (PDF, DOCX, TXT) or ask me questions about company policies."
-    system = (
-        "You are the Company Brain assistant on WhatsApp. "
-        "You help users by answering questions about company policies, documents, and records that have been uploaded.\n"
-        "Guidelines:\n"
-        "- If the user is greeting you or asking what you can do, greet them politely and let them know they can ask questions about company policies or send/upload documents (PDF, DOCX, TXT) for you to read and remember.\n"
-        "- If they are asking a specific question that wasn't found in company records, let them know that no document covering that topic has been uploaded yet, and invite them to upload the relevant document.\n"
-        "- Keep replies clear, friendly, and under 3-4 sentences."
-    )
+def generate_answer(message: str, context_facts: list | None = None) -> str:
+    """Send user message directly to Meta Model API with relevant context and return pure raw response.
+
+    No hardcoded greetings, no canned fallback messages, no preset answers.
+    Whatever the user sends, Meta Model API answers directly and naturally.
+    """
+    key = _api_key().strip()
+    if not key:
+        return ""
+
+    system_parts = [
+        "You are an intelligent, helpful, and natural AI assistant communicating on WhatsApp.",
+        "Answer the user's message directly, accurately, and naturally, whatever they ask (casual conversation, general knowledge, explanations, math, coding, or document questions).",
+        "Never output robotic disclaimers or repetitive canned text. Answer like a smart, friendly, real conversational assistant.",
+        "Keep answers concise, clear, and cleanly formatted for WhatsApp.",
+    ]
+    if context_facts:
+        system_parts.append("\nRelevant company documents and records:")
+        for fact in context_facts:
+            src = fact.get("doc_title") or fact.get("source") or "document"
+            text = fact.get("fact", "")
+            eff = fact.get("effective_date")
+            date_str = f" (effective {eff})" if eff else ""
+            system_parts.append(f"- [{src}{date_str}]: {text}")
+        system_parts.append(
+            "\nIf the user's question relates to these documents, answer based on them and cite the document name as evidence. "
+            "If the question is casual chat or general knowledge, answer directly using your own intelligence."
+        )
+
+    system = "\n".join(system_parts)
     url = _api_base().rstrip("/") + "/chat/completions"
     try:
         resp = httpx.post(
@@ -364,11 +382,11 @@ def reply_conversation(message: str) -> str:
                     {"role": "system", "content": system},
                     {"role": "user", "content": message},
                 ],
-                "max_tokens": 300,
+                "max_tokens": 1000,
                 "temperature": 0.7,
             },
             headers={
-                "Authorization": "Bearer " + _api_key().strip(),
+                "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
             },
             timeout=30.0,
@@ -377,5 +395,114 @@ def reply_conversation(message: str) -> str:
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
-    except Exception:
-        return "Hello! I am your Company Brain assistant. You can upload documents (PDF, DOCX, TXT) or ask me questions about company policies."
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("generate_answer error: %s", exc)
+        return ""
+
+
+def generate_doc_reply(filename: str, text: str | None, fact_count: int) -> str:
+    """Generate a dynamic acknowledgment from Meta Model API when a document is uploaded."""
+    key = _api_key().strip()
+    if not key:
+        return ""
+    if text:
+        prompt = (
+            f"The user just uploaded a document named '{filename}'. "
+            f"Here is a brief snippet of its content:\n{text[:600]}\n\n"
+            f"Acknowledge receiving and reading this document naturally in 1-2 friendly sentences. "
+            f"Mention what the document covers and let the user know they can ask any questions about it."
+        )
+    else:
+        prompt = (
+            f"The user just sent a file named '{filename}', but text could not be extracted from it. "
+            f"Inform the user naturally and politely in 1 sentence."
+        )
+    url = _api_base().rstrip("/") + "/chat/completions"
+    try:
+        resp = httpx.post(
+            url,
+            json={
+                "model": _api_model(),
+                "messages": [
+                    {"role": "system", "content": "You are a helpful WhatsApp AI assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 600,
+                "temperature": 0.7,
+            },
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+            trust_env=False,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("generate_doc_reply error: %s", exc)
+        return ""
+
+
+def reply_conversation(message: str) -> str:
+    return generate_answer(message)
+
+
+def transcribe_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> str | None:
+    """Extract and transcribe all text, numbers, and information from image bytes using Meta Model API."""
+    import base64
+    key = _api_key().strip()
+    if not key or not image_bytes:
+        return None
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_url = f"data:{mime_type};base64,{b64}"
+    url = _api_base().rstrip("/") + "/chat/completions"
+
+    payload = {
+        "model": _api_model(),
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Please read and transcribe all visible text, numbers, dates, titles, and details "
+                            "from this image accurately and completely. Preserve headings and layout structure. "
+                            "Output only the extracted transcription without chat preamble."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 1500,
+        "temperature": 0.2,
+    }
+
+    try:
+        resp = httpx.post(
+            url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=60.0,
+            trust_env=False,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+        return content or None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("transcribe_image error: %s", exc)
+        return None
