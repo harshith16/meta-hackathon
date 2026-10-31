@@ -26,27 +26,15 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _api_key() -> str:
-    # Prefer the live environment value so tests / processes that set or
-    # unset META_API_KEY after import still behave correctly; fall back
-    # to the value config captured at import time.
-    env = os.environ.get("META_API_KEY")
-    if env is not None:
-        return env
-    return config.META_API_KEY
+    return config.META_API_KEY or os.environ.get("META_API_KEY", "")
 
 
 def _api_base() -> str:
-    env = os.environ.get("META_API_BASE")
-    if env:
-        return env
-    return config.META_API_BASE
+    return config.META_API_BASE or os.environ.get("META_API_BASE", "")
 
 
 def _api_model() -> str:
-    env = os.environ.get("META_MODEL")
-    if env:
-        return env
-    return config.META_MODEL
+    return config.META_MODEL or os.environ.get("META_MODEL", "")
 
 
 def has_key() -> bool:
@@ -352,3 +340,42 @@ def extract_and_store(
             return ids
         ids.append(stored_id)
     return ids
+
+
+def reply_conversation(message: str) -> str:
+    """Generate a conversational reply using Groq when no specific document/policy matches."""
+    if not has_key():
+        return "Hello! I am your Company Brain assistant. You can upload documents (PDF, DOCX, TXT) or ask me questions about company policies."
+    system = (
+        "You are the Company Brain assistant on WhatsApp. "
+        "You help users by answering questions about company policies, documents, and records that have been uploaded.\n"
+        "Guidelines:\n"
+        "- If the user is greeting you or asking what you can do, greet them politely and let them know they can ask questions about company policies or send/upload documents (PDF, DOCX, TXT) for you to read and remember.\n"
+        "- If they are asking a specific question that wasn't found in company records, let them know that no document covering that topic has been uploaded yet, and invite them to upload the relevant document.\n"
+        "- Keep replies clear, friendly, and under 3-4 sentences."
+    )
+    url = _api_base().rstrip("/") + "/chat/completions"
+    try:
+        resp = httpx.post(
+            url,
+            json={
+                "model": _api_model(),
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": message},
+                ],
+                "max_tokens": 300,
+                "temperature": 0.7,
+            },
+            headers={
+                "Authorization": "Bearer " + _api_key().strip(),
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+            trust_env=False,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return "Hello! I am your Company Brain assistant. You can upload documents (PDF, DOCX, TXT) or ask me questions about company policies."

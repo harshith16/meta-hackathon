@@ -4,45 +4,95 @@ The founder pastes keys himself (Meta Model API, WhatsApp token, DB URL).
 This module only reads names; it never prints values.
 """
 
+import logging
 import os
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Resolve .env from repo root, the folder containing the app/ package
+_REPO_ROOT_ENV = Path(__file__).resolve().parent.parent / ".env"
+_LOADED_ENV_PATH = None
 
 try:
     from dotenv import load_dotenv
 
-    # Loads .env from the working directory if present. Real environment
-    # variables always win (override=False); this only fills gaps so a
-    # plain `.env` file just works on a dev machine.
-    load_dotenv()
+    # Explicit path to repo-root .env with override=False
+    if _REPO_ROOT_ENV.is_file():
+        load_dotenv(dotenv_path=_REPO_ROOT_ENV, override=False)
+        _LOADED_ENV_PATH = str(_REPO_ROOT_ENV.resolve())
+    else:
+        # Fallback to working directory lookup only if repo-root file does not exist
+        _cwd_env = Path.cwd() / ".env"
+        if _cwd_env.is_file():
+            load_dotenv(dotenv_path=_cwd_env, override=False)
+            _LOADED_ENV_PATH = str(_cwd_env.resolve())
+        else:
+            load_dotenv(override=False)
+
+    if _LOADED_ENV_PATH:
+        logger.info("Loaded .env from: %s", _LOADED_ENV_PATH)
+    else:
+        logger.info("No .env file found to load")
 except ImportError:
-    pass
+    logger.warning("python-dotenv is not installed; .env loading skipped")
+
+LOADED_ENV_PATH = _LOADED_ENV_PATH
+
+_DEFAULTS = {
+    "DATABASE_URL": "postgresql://brain:brain@localhost:5432/brain",
+    "OLLAMA_URL": "http://localhost:11434",
+    "EMBED_MODEL": "embeddinggemma",
+    "EMBED_DIMS": 768,
+    "META_API_BASE": "https://api.meta.ai/v1",
+    "META_API_KEY": "",
+    "META_MODEL": "muse-spark-1.3",
+    "WHATSAPP_TOKEN": "",
+    "WHATSAPP_ACCESS_TOKEN": "",
+    "WHATSAPP_PHONE_ID": "",
+    "WHATSAPP_PHONE_NUMBER_ID": "",
+    "WHATSAPP_TEST_RECIPIENT": "",
+    "WHATSAPP_VERIFY_TOKEN": "",
+    "WHATSAPP_APP_SECRET": "",
+    "WHATSAPP_CEO_PHONE": "",
+    "WHATSAPP_CFO_PHONE": "",
+    "WHATSAPP_CTO_PHONE": "",
+    "WHATSAPP_MANAGER_PHONE": "",
+    "COMPANY_ID": "sample-company",
+    "MEDIA_DIR": "./media",
+}
 
 
-def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
+def get(name: str, default: str = "") -> str:
+    """Read an environment variable, falling back to default or known defaults."""
+    if name in ("WHATSAPP_TOKEN", "WHATSAPP_ACCESS_TOKEN"):
+        return os.environ.get("WHATSAPP_ACCESS_TOKEN") or os.environ.get("WHATSAPP_TOKEN") or default or ""
+    if name in ("WHATSAPP_PHONE_ID", "WHATSAPP_PHONE_NUMBER_ID"):
+        return os.environ.get("WHATSAPP_PHONE_NUMBER_ID") or os.environ.get("WHATSAPP_PHONE_ID") or default or ""
+    return os.environ.get(name, default or _DEFAULTS.get(name, ""))
 
 
-DATABASE_URL = _env("DATABASE_URL", "postgresql://brain:brain@localhost:5432/brain")
-OLLAMA_URL = _env("OLLAMA_URL", "http://localhost:11434")
-EMBED_MODEL = _env("EMBED_MODEL", "embeddinggemma")
-EMBED_DIMS = 768
+def __getattr__(name: str):
+    """Dynamic module attribute access ensuring live os.environ values."""
+    if name in ("WHATSAPP_TOKEN", "WHATSAPP_ACCESS_TOKEN"):
+        return os.environ.get("WHATSAPP_ACCESS_TOKEN") or os.environ.get("WHATSAPP_TOKEN") or ""
+    if name in ("WHATSAPP_PHONE_ID", "WHATSAPP_PHONE_NUMBER_ID"):
+        return os.environ.get("WHATSAPP_PHONE_NUMBER_ID") or os.environ.get("WHATSAPP_PHONE_ID") or ""
+    if name in _DEFAULTS:
+        val = os.environ.get(name)
+        if val is not None:
+            if name == "EMBED_DIMS":
+                try:
+                    return int(val)
+                except ValueError:
+                    return 768
+            return val
+        return _DEFAULTS[name]
+    val = os.environ.get(name)
+    if val is not None:
+        return val
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
-# Meta Model API (Muse Spark) — used only for extraction + answer synthesis.
-# Fictional sample-company data only on the free-credit tier.
-META_API_BASE = _env("META_API_BASE", "https://api.meta.ai/v1")
-META_API_KEY = _env("META_API_KEY", "")
-META_MODEL = _env("META_MODEL", "muse-spark-1.3")
 
-# WhatsApp Cloud API (founder connects his own app + test number).
-WHATSAPP_TOKEN = _env("WHATSAPP_TOKEN", "")
-WHATSAPP_PHONE_ID = _env("WHATSAPP_PHONE_ID", "")
-WHATSAPP_VERIFY_TOKEN = _env("WHATSAPP_VERIFY_TOKEN", "")
-WHATSAPP_APP_SECRET = _env("WHATSAPP_APP_SECRET", "")
-
-# Hierarchy role mapping (comma-separated phone lists allowed).
-# WHATSAPP_MANAGER_PHONE is kept as a CEO alias (backward compat).
-WHATSAPP_CEO_PHONE = _env("WHATSAPP_CEO_PHONE", "")
-WHATSAPP_CFO_PHONE = _env("WHATSAPP_CFO_PHONE", "")
-WHATSAPP_CTO_PHONE = _env("WHATSAPP_CTO_PHONE", "")
-WHATSAPP_MANAGER_PHONE = _env("WHATSAPP_MANAGER_PHONE", "")
-
-COMPANY_ID = _env("COMPANY_ID", "sample-company")
+def __dir__():
+    return list(globals().keys()) + list(_DEFAULTS.keys())

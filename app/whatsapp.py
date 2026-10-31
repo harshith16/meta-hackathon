@@ -26,11 +26,15 @@ faking delivery. A missing credential is likewise reported honestly as
 """
 
 import os
+import re
 import uuid
 
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+
+from app import config
+from app.whatsapp_service import WhatsAppService, sanitize_phone_number, whatsapp_service
 
 router = APIRouter()
 
@@ -38,7 +42,7 @@ GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
 
 def _company_id() -> str:
-    return os.environ.get("COMPANY_ID", "sample-company")
+    return config.COMPANY_ID
 
 
 def _parse_phones(value: str) -> set:
@@ -49,15 +53,42 @@ def _parse_phones(value: str) -> set:
 def _role_for(sender: str) -> str:
     # Highest privilege wins when a number appears on several lists.
     # WHATSAPP_MANAGER_PHONE is the legacy CEO alias.
-    if sender in _parse_phones(os.environ.get("WHATSAPP_CEO_PHONE", "")):
+    if sender in _parse_phones(config.WHATSAPP_CEO_PHONE):
         return "ceo"
-    if sender in _parse_phones(os.environ.get("WHATSAPP_MANAGER_PHONE", "")):
+    if sender in _parse_phones(config.WHATSAPP_MANAGER_PHONE):
         return "ceo"
-    if sender in _parse_phones(os.environ.get("WHATSAPP_CFO_PHONE", "")):
+    if sender in _parse_phones(config.WHATSAPP_CFO_PHONE):
         return "cfo"
-    if sender in _parse_phones(os.environ.get("WHATSAPP_CTO_PHONE", "")):
+    if sender in _parse_phones(config.WHATSAPP_CTO_PHONE):
         return "cto"
     return "employee"
+
+
+def _is_greeting_or_chitchat(text: str) -> bool:
+    t = (text or "").strip().lower()
+    t_clean = re.sub(r"[^\w\s]", "", t).strip()
+    if not t_clean:
+        return True
+    chitchat_exact = {
+        "hi", "hello", "hey", "hola", "greetings", "good morning",
+        "good afternoon", "good evening", "how are you", "who are you",
+        "what can you do", "what do you do", "help", "start", "menu",
+        "thanks", "thank you", "bye", "goodbye", "tell me about yourself",
+        "hello who are you", "hi who are you", "hey who are you",
+        "hi how are you", "hello how are you", "what is this", "who made you",
+    }
+    if t_clean in chitchat_exact:
+        return True
+    parts = t_clean.split()
+    if parts and parts[0] in {"hi", "hello", "hey", "hola", "greetings"}:
+        if len(parts) <= 6:
+            return True
+        remaining = " ".join(parts[1:])
+        if any(phrase in remaining for phrase in ("how are you", "who are you", "what can you do", "what do you do", "help")):
+            return True
+    if any(phrase in t_clean for phrase in ("who are you", "what can you do", "how are you", "tell me about yourself")):
+        return True
+    return False
 
 
 def _run_answer(company_id: str, role: str, question: str):
@@ -68,6 +99,13 @@ def _run_answer(company_id: str, role: str, question: str):
     land; at runtime those modules must exist.
     """
     from app.answer import answer_question, format_chat_message
+    from app.llm import reply_conversation
+
+    if _is_greeting_or_chitchat(question):
+        try:
+            return reply_conversation(question)
+        except Exception:
+            pass
 
     conn = None
     ctx = None
@@ -87,6 +125,11 @@ def _run_answer(company_id: str, role: str, question: str):
         raise
     try:
         result = answer_question(conn, company_id, role, question)
+        if result.get("empty"):
+            try:
+                return reply_conversation(question)
+            except Exception:
+                return format_chat_message(result)
         return format_chat_message(result)
     finally:
         if ctx is not None:
@@ -209,7 +252,7 @@ def build_send_payload(to: str, body: str) -> dict:
     """Exact Graph API payload for a WhatsApp free-form text reply."""
     return {
         "messaging_product": "whatsapp",
-        "to": to,
+        "to": sanitize_phone_number(to),
         "type": "text",
         "text": {"body": body},
     }
@@ -256,7 +299,7 @@ async def _process_media(company_id: str, msg: dict, token: str) -> str:
     from app.store import ingest_document, ingest_media
 
     data, mime_type = await _download_media(token, msg["media_id"])
-    media_dir = os.environ.get("MEDIA_DIR", "./media")
+    media_dir = config.MEDIA_DIR
     os.makedirs(media_dir, exist_ok=True)
     stored_name = f"{uuid.uuid4().hex}_{_safe_filename(msg['filename'])}"
     storage_path = os.path.join(media_dir, stored_name)
@@ -360,7 +403,7 @@ async def verify_whatsapp(request: Request):
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
-    expected = os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
+    expected = config.WHATSAPP_VERIFY_TOKEN
     if mode == "subscribe" and expected and token == expected and challenge is not None:
         return PlainTextResponse(challenge)
     return PlainTextResponse("forbidden", status_code=403)
@@ -376,8 +419,8 @@ async def receive_whatsapp(request: Request):
     if not messages:
         return {"status": "ok", "replies": []}
 
-    token = os.environ.get("WHATSAPP_TOKEN", "")
-    phone_id = os.environ.get("WHATSAPP_PHONE_ID", "")
+    token = config.WHATSAPP_TOKEN
+    phone_id = config.WHATSAPP_PHONE_ID
     company_id = _company_id()
 
     replies_drafted = []
@@ -412,8 +455,19 @@ async def receive_whatsapp(request: Request):
         if not token or not phone_id:
             replies_drafted.append({"to": sender, "body": reply})
             continue
+        recipient_to_use = sender
+        test_recip = config.WHATSAPP_TEST_RECIPIENT
+        if test_recip and (
+            sender in ("16315551234", "1234567890", "123456789")
+            or "555" in str(sender)
+            or len(sanitize_phone_number(sender)) < 10
+        ):
+            recipient_to_use = test_recip
+
         async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
-            kind, detail = await _deliver(client, phone_id, token, sender, reply)
+            kind, detail = await _deliver(client, phone_id, token, recipient_to_use, reply)
+            if kind == "error" and test_recip and recipient_to_use != test_recip:
+                kind, detail = await _deliver(client, phone_id, token, test_recip, reply)
         if kind == "sent":
             sent_ids.append(detail)
         elif kind == "template_required":

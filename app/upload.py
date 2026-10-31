@@ -39,18 +39,19 @@ async def upload_file(
     searchable document, and fed to the fact-extraction pipeline —
     best-effort, never failing the upload itself.
     """
+    from app import config
     from app.db import get_conn
     from app.store import ingest_document, ingest_media
 
     filename = _safe_filename(file.filename)
-    media_dir = os.environ.get("MEDIA_DIR", "./media")
+    media_dir = config.MEDIA_DIR
     os.makedirs(media_dir, exist_ok=True)
     stored_name = f"{uuid.uuid4().hex}_{filename}"
     storage_path = os.path.join(media_dir, stored_name)
     content = await file.read()
     with open(storage_path, "wb") as fh:
         fh.write(content)
-    company_id = os.environ.get("COMPANY_ID", "sample-company")
+    company_id = config.COMPANY_ID
     with get_conn() as conn:
         media_id = ingest_media(
             conn,

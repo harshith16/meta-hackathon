@@ -18,13 +18,14 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app import config
 from app.db import get_conn
 from app.store import ingest_document, write_fact
 
-COMPANY_ID = "sample-company"
-COMPANY_NAME = "Meridian Field Services"  # PLACEHOLDER, founder picks later
-WORKER_NAME = "Priya"  # PLACEHOLDER
-MANAGER_NAME = "Rahul"  # PLACEHOLDER
+COMPANY_ID = config.COMPANY_ID
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Meridian Field Services")  # PLACEHOLDER, founder picks later
+WORKER_NAME = os.environ.get("WORKER_NAME", "Priya")  # PLACEHOLDER
+MANAGER_NAME = os.environ.get("MANAGER_NAME", "Rahul")  # PLACEHOLDER
 
 TRAVEL_DOC = """Travel Policy — {company}
 

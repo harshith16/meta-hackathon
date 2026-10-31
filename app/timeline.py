@@ -114,6 +114,6 @@ async def timeline_page(memory_id: str):
 
 
 def _company_id() -> str:
-    import os
+    from app import config
 
-    return os.environ.get("COMPANY_ID", "sample-company")
+    return config.COMPANY_ID

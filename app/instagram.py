@@ -15,19 +15,21 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from app import config
+
 router = APIRouter()
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
 
 def _company_id() -> str:
-    return os.environ.get("COMPANY_ID", "sample-company")
+    return config.COMPANY_ID
 
 
 def _role_for(sender: str) -> str:
     # Role rule, identical to WhatsApp: the manager's IG user id is set
     # in IG_USER_MANAGER at demo time; everyone else is an employee.
-    manager_id = os.environ.get("IG_USER_MANAGER", "")
+    manager_id = config.get("IG_USER_MANAGER", "")
     return "manager" if manager_id and sender == manager_id else "employee"
 
 
@@ -113,7 +115,7 @@ async def verify_instagram(request: Request):
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
-    expected = os.environ.get("INSTAGRAM_VERIFY_TOKEN", "")
+    expected = config.get("INSTAGRAM_VERIFY_TOKEN", "")
     if mode == "subscribe" and expected and token == expected and challenge is not None:
         return PlainTextResponse(challenge)
     return PlainTextResponse("forbidden", status_code=403)
@@ -129,8 +131,8 @@ async def receive_instagram(request: Request):
     if not messages:
         return {"status": "ok", "replies": []}
 
-    token = os.environ.get("INSTAGRAM_TOKEN", "")
-    page_id = os.environ.get("IG_PAGE_ID", "")
+    token = config.get("INSTAGRAM_TOKEN", "")
+    page_id = config.get("IG_PAGE_ID", "")
     company_id = _company_id()
 
     replies_drafted = []

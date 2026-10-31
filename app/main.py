@@ -8,18 +8,19 @@ and outcomes only — never tokens, secrets, or message bodies.
 
 import logging
 
-from fastapi import FastAPI
-
-from app.embed import vectors_available
-from app.timeline import router as timeline_router
-from app.upload import router as upload_router
-from app.whatsapp import router as whatsapp_router
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+from fastapi import FastAPI
+
+from app import config
+from app.embed import vectors_available
+from app.timeline import router as timeline_router
+from app.upload import router as upload_router
+from app.whatsapp import router as whatsapp_router
 
 app = FastAPI(title="company-brain")
 app.include_router(whatsapp_router)

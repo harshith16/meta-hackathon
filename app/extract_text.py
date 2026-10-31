@@ -47,6 +47,11 @@ def _extract_docx(data: bytes) -> str | None:
 
 _EXTRACTORS = {
     ".txt": _extract_txt,
+    ".text": _extract_txt,
+    ".md": _extract_txt,
+    ".markdown": _extract_txt,
+    ".csv": _extract_txt,
+    ".json": _extract_txt,
     ".pdf": _extract_pdf,
     ".docx": _extract_docx,
 }

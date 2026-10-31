@@ -16,36 +16,50 @@ except ImportError:  # pragma: no cover - parallel-build tolerance
 EMPTY_ANSWER = "I couldn't find a matching policy for that question."
 
 
-def _build_citations(current):
+def _build_citations(current, doc_titles=None):
     """One citation per fact: document ids first, else the chat message id."""
     citations = []
+    seen = set()
     for fact in current:
         doc_ids = fact.get("document_ids") or []
         if doc_ids:
             for doc_id in doc_ids:
+                ref = doc_titles.get(str(doc_id)) if doc_titles else None
+                ref = ref or str(doc_id)
+                key = (fact["id"], fact["source"], ref)
+                if key not in seen:
+                    seen.add(key)
+                    citations.append(
+                        {
+                            "memory_id": fact["id"],
+                            "source": fact["source"],
+                            "source_ref": ref,
+                        }
+                    )
+        elif fact.get("source_message_id"):
+            ref = fact["source_message_id"]
+            key = (fact["id"], fact["source"], ref)
+            if key not in seen:
+                seen.add(key)
                 citations.append(
                     {
                         "memory_id": fact["id"],
                         "source": fact["source"],
-                        "source_ref": str(doc_id),
+                        "source_ref": ref,
                     }
                 )
-        elif fact.get("source_message_id"):
-            citations.append(
-                {
-                    "memory_id": fact["id"],
-                    "source": fact["source"],
-                    "source_ref": fact["source_message_id"],
-                }
-            )
         else:
-            citations.append(
-                {
-                    "memory_id": fact["id"],
-                    "source": fact["source"],
-                    "source_ref": fact["source"],
-                }
-            )
+            ref = fact["source"]
+            key = (fact["id"], fact["source"], ref)
+            if key not in seen:
+                seen.add(key)
+                citations.append(
+                    {
+                        "memory_id": fact["id"],
+                        "source": fact["source"],
+                        "source_ref": ref,
+                    }
+                )
     return citations
 
 
@@ -105,13 +119,41 @@ def answer_question(conn, company_id, role, question):
             answer = llm.synthesize(question, current, conflict_rows)
         except Exception:
             answer = None
-    if not answer or not str(answer).strip():
+    else:
         answer = _template_fallback(current)
+
+    if not answer or not str(answer).strip():
+        return {
+            "answer": EMPTY_ANSWER,
+            "facts": [],
+            "citations": [],
+            "freshness": None,
+            "conflict": None,
+            "empty": True,
+        }
+
+    doc_ids_all = set()
+    for f in current:
+        for d in (f.get("document_ids") or []):
+            doc_ids_all.add(str(d))
+    doc_titles = {}
+    if doc_ids_all and hasattr(conn, "cursor"):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title FROM documents WHERE id = ANY(%s::uuid[])",
+                    (list(doc_ids_all),),
+                )
+                for did, dtitle in cur.fetchall():
+                    if dtitle:
+                        doc_titles[str(did)] = dtitle
+        except Exception:
+            pass
 
     return {
         "answer": answer,
         "facts": current,
-        "citations": _build_citations(current),
+        "citations": _build_citations(current, doc_titles=doc_titles),
         "freshness": _build_freshness(current),
         "conflict": _build_conflict(conflict_rows),
         "empty": False,
@@ -126,11 +168,20 @@ def format_chat_message(result):
     lines = [result["answer"]]
     citations = result.get("citations") or []
     if citations:
+        lines.append("")
         lines.append("Evidence:")
+        seen_refs = set()
         for c in citations:
-            lines.append(f"- {c['source']}: {c['source_ref']}")
+            src = c["source"].capitalize() if isinstance(c.get("source"), str) else "Source"
+            ref = c.get("source_ref", "")
+            item = f"- {src}: {ref}"
+            if item not in seen_refs:
+                seen_refs.add(item)
+                lines.append(item)
     if result.get("freshness"):
+        lines.append("")
         lines.append(result["freshness"])
     if result.get("conflict"):
+        lines.append("")
         lines.append(result["conflict"])
-    return "\n".join(lines)
+    return "\n".join(lines).strip()

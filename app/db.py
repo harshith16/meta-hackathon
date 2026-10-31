@@ -11,16 +11,24 @@ from psycopg_pool import ConnectionPool
 from app import config
 
 _pool = None
+_pool_conninfo = None
 _lock = threading.Lock()
 
 
 def get_pool() -> ConnectionPool:
     """Return the shared pool, creating it lazily in a thread-safe way."""
-    global _pool
-    if _pool is None:
+    global _pool, _pool_conninfo
+    current_url = config.DATABASE_URL
+    if _pool is None or _pool_conninfo != current_url:
         with _lock:
-            if _pool is None:
-                _pool = ConnectionPool(conninfo=config.DATABASE_URL)
+            if _pool is None or _pool_conninfo != current_url:
+                if _pool is not None:
+                    try:
+                        _pool.close()
+                    except Exception:
+                        pass
+                _pool = ConnectionPool(conninfo=current_url)
+                _pool_conninfo = current_url
     return _pool
 
 
